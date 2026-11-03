@@ -15,7 +15,7 @@ The workspace opens in your browser and returns to where you stopped. Stop it wi
 
 1. **Read first.** Read the whole passage before typing. Open **Reference** if you are stuck.
 2. **Translate a small piece.** Fifteen minutes and a few paragraphs is a valid session. Press `Cmd+Enter` to move to the next segment.
-3. **Record real decisions.** Select a source word and press **+ Glossary** when you settle a term. Use **Note** on a passage you are unsure about.
+3. **Record real decisions.** Select a source word and press **+ Glossary** when you settle a term. To write down a thought, select text in the source or in your translation and press **+ Memo** or `Option+M`. Memos support Markdown. Use **Note** for a quick remark on a whole segment.
 4. **Read it back.** Switch to **Read** and read only the Vietnamese. If it sounds wrong aloud, fix it now or leave it as a draft.
 
 Do not polish during the first pass. Finish the chapter, then revise it.
@@ -73,7 +73,7 @@ Run a final pass in **Tiếng Việt** mode and mark segments `final`. Then expo
 python3 tr.py export plato-republic
 ```
 
-This writes a reader page and its fonts to `dist/`. Keep them together when you share or upload them. Before publishing, check the edition's licence in `NOTES.md`.
+This writes a reader page to `dist/`. Before publishing, check the edition's licence in `NOTES.md`.
 
 ## Publish to the web
 
@@ -85,7 +85,7 @@ python3 tr.py publish
 
 This commits your work and pushes it to GitHub. GitHub Actions then rebuilds the site, usually within a few minutes.
 
-- **Everything in this repository is public**, including drafts, notes and `NOTES.md`. `archive/` stays on your computer.
+- **Everything in this repository is public**, including drafts, notes, memos and `NOTES.md`. The website does not show notes or memos, but anyone can read them in the repository. `archive/` stays on your computer.
 - **Using another PC:** run `git pull` before you start, and `python3 tr.py publish` when you finish.
 - **Preview the site locally:** run `python3 tr.py site`, then open `site/index.html`.
 
@@ -128,7 +128,7 @@ Run `python3 tr.py check` when you are done.
 ## Rules that keep your work safe
 
 - **Do not edit `source.md` after you begin translating.** Segment IDs come from its order. If you must correct it, change only words, not the paragraph structure, then run `python3 tr.py check`.
-- **Your work is in `books/<book>/vi/`, `titles.json` and `glossary.json`.** These are plain JSON, so you are never locked in.
+- **Your work is in `books/<book>/vi/`, `memos/`, `titles.json` and `glossary.json`.** These are plain JSON, so you are never locked in.
 - **Use Git for history.** Run `git init` once in this folder. After that, the workspace commits your work each time it starts and stops, if Git is set up with your name and email.
 
 ## Where Claude fits, only when you ask

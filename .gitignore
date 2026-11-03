@@ -4,3 +4,4 @@ last.json
 dist/
 site/
 archive/
+.local/

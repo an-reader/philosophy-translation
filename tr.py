@@ -9,7 +9,7 @@
   python3 tr.py site                              build the read-only website into site/
   python3 tr.py publish                           commit your work and push it to GitHub
 """
-import argparse, html, json, os, re, shutil, subprocess, sys, tempfile, threading, time, webbrowser
+import argparse, html, json, os, re, shutil, subprocess, uuid, sys, tempfile, threading, time, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -206,6 +206,46 @@ def save_title(book, kind, key, vi_text):
     return titles
 
 
+def memo_path(book, n):
+    return book["dir"] / "memos" / f"{n:03d}.json"
+
+
+def load_memos(book, n):
+    return read_json(memo_path(book, n), [])
+
+
+def save_memo(book, n, data):
+    """Create, update or delete a memo in one chapter. Memos stay out of the website."""
+    ch = book["chapters"][n - 1]
+    ids = [s["id"] for s in ch["segs"]]
+    with LOCK:
+        memos = load_memos(book, n)
+        if data.get("delete"):
+            memos = [m for m in memos if m["id"] != data["delete"]]
+        else:
+            body = str(data["body"]).strip()
+            if not body:
+                raise ValueError("empty memo")
+            now = time.strftime("%Y-%m-%dT%H:%M:%S")
+            old = next((m for m in memos if m["id"] == data.get("id")), None)
+            if old:
+                old.update(body=body, updated=now)
+            else:
+                seg, end = str(data["seg"]), str(data.get("endSeg") or data["seg"])
+                if seg not in ids or end not in ids:
+                    raise KeyError(seg)
+                memos.append({"id": uuid.uuid4().hex[:12], "side": "vi" if data.get("side") == "vi" else "source",
+                              "seg": seg, "endSeg": end, "offset": int(data.get("offset", 0)),
+                              "endOffset": int(data.get("endOffset", 0)), "quote": str(data.get("quote", "")),
+                              "body": body, "created": now, "updated": now})
+        memos.sort(key=lambda m: (m["seg"], m["offset"], m["created"]))
+        if memos:
+            write_json(memo_path(book, n), memos)
+        elif memo_path(book, n).exists():
+            memo_path(book, n).unlink()
+    return memos
+
+
 def clean_glossary(items):
     out, seen = [], set()
     for g in items:
@@ -236,9 +276,6 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not parts:
                 return self.send_body((ROOT / "app.html").read_bytes(), "text/html; charset=utf-8")
-            if len(parts) == 2 and parts[0] == "fonts" and re.match(r"^[a-z0-9-]+\.(woff2|css)$", parts[1]):
-                ctype = "font/woff2" if parts[1].endswith("woff2") else "text/css; charset=utf-8"
-                return self.send_body((ROOT / "fonts" / parts[1]).read_bytes(), ctype)
             if parts == ["api", "books"]:
                 out = []
                 for s in all_slugs():
@@ -257,6 +294,12 @@ class Handler(BaseHTTPRequestHandler):
                 write_json(ROOT / "last.json", {"book": parts[2]})
                 return self.send_json({"n": n, "title": ch["title"], "part": ch["part"], "segs": ch["segs"],
                                        "vi": load_vi(b, n), "refs": refs})
+            if len(parts) == 4 and parts[:2] == ["api", "memos"]:
+                return self.send_json(load_memos(load_book(parts[2]), int(parts[3])))
+            if len(parts) == 3 and parts[:2] == ["api", "memos"]:
+                b = load_book(parts[2])
+                return self.send_json([{"n": c["n"], "title": c["title"], "memos": load_memos(b, c["n"])}
+                                       for c in b["chapters"] if memo_path(b, c["n"]).exists()])
             if len(parts) == 3 and parts[:2] == ["api", "glossary"]:
                 return self.send_json(read_json(load_book(parts[2])["dir"] / "glossary.json", []))
         except (KeyError, IndexError, ValueError, FileNotFoundError):
@@ -274,6 +317,8 @@ class Handler(BaseHTTPRequestHandler):
                 r = save_seg(load_book(parts[2]), int(parts[3]), str(data["id"]), str(data.get("vi", "")),
                              str(data.get("status", "draft")), str(data.get("note", "")))
                 return self.send_json(r)
+            if len(parts) == 4 and parts[:2] == ["api", "memos"]:
+                return self.send_json(save_memo(load_book(parts[2]), int(parts[3]), data))
             if len(parts) == 3 and parts[:2] == ["api", "titles"]:
                 return self.send_json(save_title(load_book(parts[2]), str(data["kind"]), str(data.get("key", "")), str(data.get("vi", ""))))
             if len(parts) == 3 and parts[:2] == ["api", "glossary"]:
@@ -340,6 +385,11 @@ def cmd_check(a):
         for ch in b["chapters"]:
             for seg in ch["segs"]:
                 ids[seg["id"]] = (ch["n"], seg)
+        for f in sorted((b["dir"] / "memos").glob("*.json")) if (b["dir"] / "memos").exists() else []:
+            for memo in json.loads(f.read_text(encoding="utf-8")):
+                if memo["seg"] not in ids:
+                    problems += 1
+                    print(f"{s}: memo {memo['id']} points to missing segment {memo['seg']}")
         for r in b["refs"]:
             if len(r["chapters"]) != len(b["chapters"]):
                 problems += 1
@@ -414,13 +464,12 @@ def cmd_export(a):
     out = ROOT / "dist" / f"{a.slug}.html"
     out.parent.mkdir(exist_ok=True)
     out.write_text(page, encoding="utf-8")
-    shutil.copytree(ROOT / "fonts", out.parent / "fonts", dirs_exist_ok=True)
-    print(f"Wrote {out} (share it together with dist/fonts)")
+    print(f"Wrote {out}")
 
 
 SITE_CSS = """:root{--bg:#faf7f0;--ink:#26221c;--mut:#766d5f;--line:#e0d8c8;--acc:#8a3b1e;--bar:#e0d8c8;--on:#faf7f0}
 @media (prefers-color-scheme:dark){:root{--bg:#1b1916;--ink:#ebe5d9;--mut:#a39a8c;--line:#3a352c;--acc:#e29a74;--bar:#3a352c;--on:#1b1916}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:18px/1.75 "Literata Variable","Noto Serif Variable",Georgia,serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:18px/1.75 "Noto Serif",Georgia,serif}
 a{color:var(--acc)}.top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--line);font:14px/1.4 system-ui,-apple-system,sans-serif;position:sticky;top:0;background:var(--bg)}.top .crumb{margin-right:auto;min-width:0}
 button{font:inherit;color:inherit;background:none;border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer}button.on{background:var(--acc);border-color:var(--acc);color:var(--on)}
 main{max-width:1180px;margin:auto;padding:24px 16px 64px}.narrow{max-width:720px}h1,h2{line-height:1.3}h1{font-size:30px;margin:.4em 0 .2em}h1 small,h2 small{display:block;font-size:.6em;font-weight:400;color:var(--mut)}.by{color:var(--mut);margin:0 0 24px}
@@ -438,7 +487,7 @@ bs.forEach(function(b){b.onclick=function(){set(b.dataset.m)}});set(m)})()</scri
 
 def site_page(title, prefix, crumb, content, controls=""):
     return (f'<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>{html.escape(title)}</title><link rel="stylesheet" href="{prefix}fonts/fonts.css"><link rel="stylesheet" href="{prefix}site.css"></head>'
+            f'<title>{html.escape(title)}</title><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif:ital,wght@0,400..700;1,400..700&display=swap"><link rel="stylesheet" href="{prefix}site.css"></head>'
             f'<body><div class="top"><span class="crumb">{crumb}</span>{controls}</div>{content}{SITE_JS if controls else ""}</body></html>')
 
 
@@ -451,7 +500,6 @@ def cmd_site(a):
     if out.exists():
         shutil.rmtree(out)
     out.mkdir()
-    shutil.copytree(ROOT / "fonts", out / "fonts")
     (out / "site.css").write_text(SITE_CSS, encoding="utf-8")
     (out / ".nojekyll").write_text("", encoding="utf-8")
     home = []
