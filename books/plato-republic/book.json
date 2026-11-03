@@ -1,0 +1,16 @@
+{
+  "title": "Πολιτεία (The Republic)",
+  "title_vi": "",
+  "author": "Plato",
+  "source_lang": "grc",
+  "source_label": "Ἑλληνικά (Burnet, 1905)",
+  "references": [
+    {
+      "file": "ref-en.md",
+      "label": "English (Benjamin Jowett)"
+    }
+  ],
+  "split_over": 900,
+  "detect_headings": false,
+  "provenance": "Source: Perseus Digital Library, canonical-greekLit, tlg0059.tlg030 (Burnet). Licensed CC BY-SA 4.0. Reference: Project Gutenberg #1497."
+}

@@ -1,0 +1,6 @@
+__pycache__/
+.DS_Store
+last.json
+dist/
+site/
+archive/

@@ -1,0 +1,15 @@
+{
+  "title": "Also sprach Zarathustra",
+  "title_vi": "",
+  "author": "Friedrich Nietzsche",
+  "source_lang": "de",
+  "source_label": "Deutsch",
+  "references": [
+    {
+      "file": "ref-en.md",
+      "label": "English (Thomas Common, 1909)"
+    }
+  ],
+  "split_over": 1000,
+  "provenance": "Source: Project Gutenberg #7205. Reference: Project Gutenberg #1998."
+}
