@@ -9,5 +9,5 @@
     "allowImportingTsExtensions": true,
     "types": []
   },
-  "include": ["src", "cloudflare.config.ts", "vite.config.ts", ".cloudflare/types/index.d.ts"]
+  "include": ["src", "cloudflare.config.ts", "node-shim.d.ts", "vite.config.ts", ".cloudflare/types/index.d.ts"]
 }

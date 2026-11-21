@@ -6,7 +6,8 @@ One invocation does everything and leaves nothing running:
   2. builds the data files from the copy (tr.cmd_cloud) and loads them into the local D1 (cf d1 ... --local),
   3. starts `cf dev` (bounded by a deadline and killed in the finally block) and tr.Handler in a thread on port 0,
   4. GETs every endpoint for every book and chapter, runs one fixed sequence of POSTs against both, GETs everything again,
-  5. compares status codes and parsed JSON, prints the first differences, exits 1 on any, 2 on a setup failure.
+  5. pulls the work back with `python3 tr.py pull` (a copy of tr.py in a scratch git repository) twice, see round_trip_*,
+  6. compares status codes and parsed JSON, prints the first differences, exits 1 on any, 2 on a setup failure.
 
 Left out of the comparison, by design: the `updated` and `created` fields and memo ids (clock and random values).
 `last` is compared: both sides get the same call sequence.
@@ -112,8 +113,8 @@ class Compare:
         return a[1], b[1]
 
 
-def start_cf_dev(port, env, logfile):
-    p = subprocess.Popen([CF, "dev", "--port", str(port), "--host", "127.0.0.1", "--strictPort"], cwd=CLOUD, env=env,
+def start_cf_dev(port, env, logfile, persist):
+    p = subprocess.Popen([CF, "dev", "--port", str(port), "--host", "127.0.0.1", "--strictPort"], cwd=CLOUD, env=dict(env, CF_PERSIST_TO=str(persist)),
                          stdout=logfile, stderr=subprocess.STDOUT, start_new_session=True)
     return p
 
@@ -132,7 +133,7 @@ def main():
     scratch.mkdir(parents=True)
     env = dict(os.environ, CLOUDFLARE_DEV_REGISTRY_PATH=str(scratch / "dev-registry"), CHOKIDAR_USEPOLLING="1",
                XDG_CONFIG_HOME=str(scratch / "xdg-config"), CI="1")
-    state = CLOUD / ".cloudflare" / "state"
+    state = scratch / "d1-state"  # not cloud/.cloudflare/state: the owner's local database is left alone
     proc = httpd = None
     try:
         # 1. a copy of books/ is the only place the writes land
@@ -143,15 +144,14 @@ def main():
         # 2. data files from the copy, into a fresh local D1
         tr.cmd_cloud(None)
         build = scratch / "cloud" / ".build"
-        shutil.rmtree(state, ignore_errors=True)
         def cfrun(*args):
             r = subprocess.run([CF, *args], cwd=CLOUD, env=env, capture_output=True, text=True, timeout=120)
             if r.returncode:
                 die(f"cf {' '.join(args)[:80]} failed: {(r.stderr or r.stdout)[-400:]}")
             return r.stdout
-        cfrun("d1", "migrations", "apply", LOCAL_ID, "--local")
+        cfrun("d1", "migrations", "apply", LOCAL_ID, "--local", "--persist-to", str(state))
         for f in sorted(build.glob("texts-*.json")) + sorted(build.glob("work-*.json")):
-            out = cfrun("d1", "raw", LOCAL_ID, "--local", "--batch", f"@{f}")
+            out = cfrun("d1", "raw", LOCAL_ID, "--local", "--persist-to", str(state), "--batch", f"@{f}")
             if '"success": false' in out:
                 die(f"a statement of {f.name} failed")
         log("loaded the local D1")
@@ -161,7 +161,7 @@ def main():
         py = Side("python", httpd.server_address[1])
         port = free_port()
         logfile = open(scratch / "cf-dev.log", "wb")
-        proc = start_cf_dev(port, env, logfile)
+        proc = start_cf_dev(port, env, logfile, state)
         wk = Side("worker", port)
         while True:
             if time.time() > DEADLINE:
@@ -176,7 +176,10 @@ def main():
             time.sleep(1)
         log(f"cf dev answers on 127.0.0.1:{port}; tr.Handler on {py.port}")
         cmp = Compare(py, wk)
+        worker_url = f"http://127.0.0.1:{port}"
+        round_trip_seed(cmp, scratch, worker_url, env)
         run_checks(cmp, py, wk)
+        round_trip_writes(cmp, scratch, worker_url, env)
         log(f"{cmp.n} comparisons; left out: the fields {IGNORED} and memo ids")
         for m in cmp.bad[:8]:
             log("DIFF", m)
@@ -191,8 +194,120 @@ def main():
                 os.killpg(proc.pid, signal.SIGKILL)
         if httpd:
             httpd.shutdown()
-        shutil.rmtree(state, ignore_errors=True)
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+# ---- the round trip: `python3 tr.py pull` against the Worker ----
+
+def work_files(books):
+    """Every file of the owner's work under a books/ folder, as {relative path: path}."""
+    out = {}
+    for book in sorted(p for p in books.iterdir() if (p / "book.json").exists()):
+        for pat in ("vi/*.json", "memos/*.json", "titles.json", "glossary.json", "state.json"):
+            for f in book.glob(pat):
+                out[str(f.relative_to(books))] = f
+    return out
+
+
+def make_root(scratch, name):
+    """A scratch repository holding a copy of tr.py and of books/ with its work spoiled: every vi file emptied (kept),
+    the memo files removed, titles, glossary and state emptied (kept), plus one stray memo file. Pull must restore it all."""
+    root = scratch / name
+    shutil.copytree(REPO / "books", root / "books")
+    shutil.copyfile(REPO / "tr.py", root / "tr.py")
+    for rel, f in work_files(root / "books").items():
+        if "/memos/" in "/" + rel:
+            f.unlink()
+        elif "/vi/" in "/" + rel or rel.endswith("titles.json") or rel.endswith("state.json"):
+            f.write_text("{}\n")
+        else:
+            f.write_text("[]\n")
+    stray = root / "books" / "plato-republic" / "memos" / "002.json"
+    stray.parent.mkdir(exist_ok=True)
+    stray.write_text('[{"id":"stray","seg":"002.0001","offset":0,"created":"x"}]\n')
+    git = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", *a],
+                                    cwd=root, capture_output=True, text=True, check=True)
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-q", "-m", "scratch")
+    return root
+
+
+def run_tr(root, *args, url=None, env=None):
+    e = {k: v for k, v in os.environ.items() if not k.startswith("CF_ACCESS") and k != "TR_CLOUD_URL"}
+    e.update(env or {})
+    if url:
+        e["TR_CLOUD_URL"] = url
+    return subprocess.run([sys.executable, "-I", str(root / "tr.py"), *args], cwd=root, env=e, capture_output=True, text=True, timeout=300)
+
+
+def check(cmp, label, ok, detail=""):
+    cmp.n += 1
+    if not ok:
+        cmp.bad.append(f"{label}: {detail}")
+
+
+def round_trip_seed(cmp, scratch, url, env):
+    """1. seed -> pull into a spoiled copy -> every work file byte for byte as in the real books/. 4. the guard."""
+    root = make_root(scratch, "pull-seed")
+    r = run_tr(root, "pull", url=url)
+    check(cmp, "pull-seed exit", r.returncode == 0, (r.stderr or r.stdout)[-300:])
+    real, got = work_files(REPO / "books"), work_files(root / "books")
+    check(cmp, "pull-seed file set", set(real) == set(got), f"only real {sorted(set(real) - set(got))[:3]}, only pulled {sorted(set(got) - set(real))[:3]}")
+    diff = [k for k in real if k in got and real[k].read_bytes() != got[k].read_bytes()]
+    check(cmp, "pull-seed bytes", not diff, f"{len(diff)} files differ, first {diff[:3]}")
+    log(f"round trip 1: {len(real)} work files compared byte for byte, {len(diff)} differ")
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qam", "pulled"],
+                   cwd=root, capture_output=True, check=True)
+    again = run_tr(root, "pull", url=url)  # the guard needs a committed tree; a second pull then changes nothing
+    check(cmp, "pull-seed second pull", again.returncode == 0 and "Nothing changed" in again.stdout, again.stdout[-200:])
+    # no token variables, no header: the Worker under cf dev needed none. With variables set and a wrong URL, the secret is not printed.
+    bad = run_tr(root, "pull", url="http://127.0.0.1:9", env={"CF_ACCESS_CLIENT_ID": "id-visible", "CF_ACCESS_CLIENT_SECRET": "secret-hidden"})
+    check(cmp, "pull-unreachable", bad.returncode != 0 and "secret-hidden" not in bad.stdout + bad.stderr, bad.stderr[-200:])
+    # 4. the guard: a dirty books/ is refused and nothing changes
+    for kind in ("modified", "untracked"):
+        f = root / "books" / "plato-republic" / ("vi/001.json" if kind == "modified" else "vi/099.json")
+        before = {k: v.read_bytes() for k, v in work_files(root / "books").items()}
+        f.write_text('{"x": 1}\n')
+        before[str(f.relative_to(root / "books"))] = f.read_bytes()
+        r = run_tr(root, "pull", url=url)
+        after = {k: v.read_bytes() for k, v in work_files(root / "books").items()}
+        check(cmp, f"guard {kind}", r.returncode != 0 and "not committed" in r.stderr and before == after, f"exit {r.returncode}: {r.stderr[-200:]}")
+        subprocess.run(["git", "checkout", "-q", "--", "books"], cwd=root, check=True)
+        subprocess.run(["git", "clean", "-fdq", "--", "books"], cwd=root, check=True)
+    log("round trip 4: the guard refused a modified and an untracked file, and changed nothing")
+
+
+def parsed_work(books):
+    """The work of every book as parsed JSON (an absent file is its empty value), clock values and memo ids left out."""
+    out = {}
+    for rel, f in work_files(books).items():
+        out[rel] = norm(json.loads(f.read_text(encoding="utf-8")))
+    for book in sorted(p.name for p in books.iterdir() if (p / "book.json").exists()):
+        for pat, empty in (("titles.json", {}), ("glossary.json", []), ("state.json", {})):
+            out.setdefault(f"{book}/{pat}", empty)
+    return {k: v for k, v in out.items() if v not in ({}, [])}
+
+
+def round_trip_writes(cmp, scratch, url, env):
+    """2. after the fixed writes, pull again into a spoiled copy: the same work as tr.py's own scratch copy, as parsed JSON.
+    3. `tr.py check` passes on the pulled copy."""
+    root = make_root(scratch, "pull-writes")
+    r = run_tr(root, "pull", url=url)
+    check(cmp, "pull-writes exit", r.returncode == 0, (r.stderr or r.stdout)[-300:])
+    want, got = parsed_work(scratch / "books"), parsed_work(root / "books")
+    d = first_diff(want, got)
+    check(cmp, "pull-writes parsed", not d and set(want) == set(got), d or f"files only in one side: {sorted(set(want) ^ set(got))[:3]}")
+    log(f"round trip 2: {len(want)} non-empty work files compared as parsed JSON: {'same' if not d else d}")
+    c = run_tr(root, "check")
+    check(cmp, "check on the pulled copy", c.returncode == 0, c.stdout[-300:])
+    log(f"round trip 3: tr.py check on the pulled copy exits {c.returncode}")
+    # the pull left `last` alone: work reads do not move it
+    a = cmp.wk.call("GET", "/api/books")[1]["last"]
+    cmp.wk.call("GET", "/api/work/plato-republic")
+    check(cmp, "work leaves last alone", cmp.wk.call("GET", "/api/books")[1]["last"] == a)
+    check(cmp, "work unknown book", cmp.wk.call("GET", "/api/work/nope")[0] == 404)
+    check(cmp, "memo delete with a non-text id", cmp.wk.call("POST", "/api/memos/plato-republic/1", {"delete": 5})[0] == 400)
 
 
 def all_gets(cmp):

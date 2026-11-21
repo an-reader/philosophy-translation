@@ -18,6 +18,7 @@ Purpose, from the owner: the translation workspace reachable from any browser. O
 | `tr.py pull` passes through Access with a service token that only the owner holds | The Worker stays closed to everyone else |
 | Timestamps written by the Worker are UTC+7, in `tr.py`'s format | The repository's existing timestamps are local times at that offset |
 | Two Workers on `workers.dev`, a preview and the real one, each with its own D1 database, Access on both | Test edits on the preview never touch the real work |
+| Database ids and the Access values live in `cloud/deploy.json`, ignored by git | The repository is public, and an Access team domain can name its owner |
 
 ## In order
 
@@ -32,12 +33,15 @@ Purpose, from the owner: the translation workspace reachable from any browser. O
 9. The look on the preview, on a computer and on the phone.
 10. The cutover: publish the local work, set up the real Worker the same way with the seed loaded once, then translate online. PROCESS.md changes to say so.
 
-Steps 1 to 5: built and reviewed, about 15 minutes of agent time (the size for the next run of this kind). The review found these, to fix before step 8:
+Done, with their agent time (the size for the next run of the same kind):
 
-- The preview must have its own database. `cf previews deploy` uploads a version of the same Worker with the same database, so test edits would land in the real work. The config gives a second Worker, with its own database, for the preview.
-- A deploy with `DATABASE_ID` empty would quietly create a new, empty database. The config refuses to build for a deploy while an id is empty.
-- The remote load is 41 separate `cf d1 raw` commands. One script runs them for the owner: texts any time, the work seed only after the owner confirms it.
-- Small: a memo delete with a non-text id crashes with a 500 instead of a 400; the load files are cut at a million characters, not bytes; and parity wipes any local database the owner was testing with.
+- Steps 1 to 5: about 15 minutes.
+- The review's fixes and step 6: about 7 minutes. Fixed: a second Worker and database for the preview, account values in the ignored `cloud/deploy.json`, a build that refuses while a value is empty, `cloud/load-remote.sh` for the remote load, a memo delete answering 400, load files cut by bytes, and parity keeping its own local database.
+- Step 7: about 2 minutes. The owner's look at it on a computer is open.
+
+Before step 8: `tr.py pull` must send a descriptive `User-Agent`, since `workers.dev` refuses Python's default one (error 1010).
+
+Access comes from the Worker's **Access** tab in the dashboard, which exists only after a first deploy. So the first deploy of each Worker carries a placeholder `aud`, which refuses everyone, and a second deploy carries the real one.
 
 ## The four stages
 

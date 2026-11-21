@@ -8,3 +8,4 @@ archive/
 cloud/node_modules/
 cloud/.build/
 cloud/.cloudflare/
+cloud/deploy.json

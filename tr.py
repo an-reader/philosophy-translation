@@ -8,9 +8,10 @@
   python3 tr.py export <slug>                     write dist/<slug>.html, a reader you can share
   python3 tr.py site                              build the read-only website into site/
   python3 tr.py cloud                             write cloud/.build/: texts.sql, work.sql (D1 data) and the Worker's page
+  python3 tr.py pull [--url URL]                  write the online work (from the Worker) into books/ (URL: TR_CLOUD_URL)
   python3 tr.py publish                           commit your work and push it to GitHub
 """
-import argparse, html, json, os, re, shutil, subprocess, uuid, sys, tempfile, threading, time, webbrowser
+import argparse, html, json, os, re, shutil, subprocess, urllib.error, urllib.request, uuid, sys, tempfile, threading, time, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -29,12 +30,15 @@ def read_json(path, default):
         return default
 
 
+def json_text(data):
+    return json.dumps(data, ensure_ascii=False, indent=1, sort_keys=True) + "\n"
+
+
 def write_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=1, sort_keys=True)
-        f.write("\n")
+        f.write(json_text(data))
     os.replace(tmp, path)
 
 
@@ -556,6 +560,8 @@ def cmd_site(a):
 
 
 CLOUD_STMT_MAX = 90_000  # D1 allows 100,000 bytes a statement
+CLOUD_BATCH_BYTES = 500_000  # one `cf d1 raw --batch` file; D1 states no limit on the request body, only 100 KB a statement and 30 s a call
+CLOUD_BATCH_STMTS = 500
 
 
 def sql_str(s):
@@ -618,15 +624,19 @@ def cloud_write(out, name, stmts):
             sys.exit(f"A statement is {size} bytes, over D1's statement limit: {st[:80]}...")
     (out / f"{name}.sql").write_text(";\n".join(stmts) + ";\n", encoding="utf-8")
     # cf has no file import for D1: the same statements as JSON batches for `cf d1 raw --batch @file`.
+    # Cut by the UTF-8 bytes of the JSON written, not by characters.
     chunk, size, n = [], 0, 0
     for st in stmts + [None]:
-        if st is None or (chunk and (size + len(st) > 1_000_000 or len(chunk) >= 500)):
-            n += 1
-            (out / f"{name}-{n:03d}.json").write_text(json.dumps(chunk, ensure_ascii=False), encoding="utf-8")
+        item = None if st is None else json.dumps({"sql": st}, ensure_ascii=False)
+        add = 0 if item is None else len(item.encode("utf-8")) + 1
+        if item is None or (chunk and (size + add > CLOUD_BATCH_BYTES or len(chunk) >= CLOUD_BATCH_STMTS)):
+            if chunk:
+                n += 1
+                (out / f"{name}-{n:03d}.json").write_text("[" + ",".join(chunk) + "]", encoding="utf-8")
             chunk, size = [], 0
-        if st is not None:
-            chunk.append({"sql": st})
-            size += len(st)
+        if item is not None:
+            chunk.append(item)
+            size += add
     return n
 
 
@@ -640,6 +650,79 @@ def cmd_cloud(a):
         print(f"{name}.sql: {len(stmts)} statements, {files} batch file(s) {name}-NNN.json")
     shutil.copyfile(ROOT / "app.html", out / "public" / "index.html")
     print("Wrote cloud/.build/ with public/index.html")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kw):
+        return None  # an Access login page is a refusal; the token never follows a redirect
+
+
+def pull_fetch(base, slug):
+    headers = {"Accept": "application/json"}
+    cid, secret = os.environ.get("CF_ACCESS_CLIENT_ID"), os.environ.get("CF_ACCESS_CLIENT_SECRET")
+    if cid and secret:
+        headers["CF-Access-Client-Id"], headers["CF-Access-Client-Secret"] = cid, secret
+    req = urllib.request.Request(f"{base.rstrip('/')}/api/work/{slug}", headers=headers)
+    try:
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=60) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        sys.exit(f"{slug}: the server answered {e.code}" + (" (a redirect to a login page: check the Access service token)" if 300 <= e.code < 400 else ""))
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        sys.exit(f"{slug}: cannot read the work: {getattr(e, 'reason', e)}")
+    if not isinstance(data, dict) or not all(k in data for k in ("state", "titles", "glossary", "vi", "memos")):
+        sys.exit(f"{slug}: the answer is not the work of a book")
+    return data
+
+
+def cmd_pull(a):
+    """Write the work kept online (D1, through the Worker's /api/work/<slug>) into the same files the local app writes."""
+    base = a.url or os.environ.get("TR_CLOUD_URL")
+    if not base:
+        sys.exit("No address: pass --url URL or set TR_CLOUD_URL.")
+    try:
+        dirty = subprocess.run(["git", "status", "--porcelain", "--", "books"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    except (subprocess.CalledProcessError, OSError):
+        sys.exit("Cannot read git status of books/; nothing was changed.")
+    if dirty.strip():
+        sys.exit("books/ has changes that are not committed; nothing was changed. Commit them (python3 tr.py publish) or set them aside, then pull again.\n" + dirty.rstrip())
+    slugs = all_slugs()
+    fetched = {slug: pull_fetch(base, slug) for slug in slugs}  # every book is read before any file is written
+    changed = []
+
+    def put(path, data):
+        """Write data as write_json does when it differs from the file; a file is made only for content, or when it exists."""
+        if path.exists():
+            if path.read_text(encoding="utf-8") == json_text(data):
+                return
+        elif not data:
+            return
+        write_json(path, data)
+        changed.append(path)
+
+    for slug in slugs:
+        b, w = load_book(slug), fetched[slug]
+        d = b["dir"]
+        for ch in b["chapters"]:
+            n = ch["n"]
+            entries = (w["vi"] or {}).get(str(n)) or {}
+            if entries or vi_path(b, n).exists():
+                put(vi_path(b, n), entries)
+            memos = (w["memos"] or {}).get(str(n)) or []
+            if memos:
+                put(memo_path(b, n), memos)
+            elif memo_path(b, n).exists():
+                memo_path(b, n).unlink()
+                changed.append(memo_path(b, n))
+        put(d / "state.json", w["state"])
+        put(d / "titles.json", w["titles"])
+        put(d / "glossary.json", w["glossary"])
+    if changed:
+        print("Changed files:")
+        for p in sorted(changed):
+            print("  " + str(p.relative_to(ROOT)))
+    else:
+        print("Nothing changed: books/ already holds the online work.")
 
 
 def cmd_publish(a):
@@ -667,6 +750,7 @@ def main():
     s = sub.add_parser("export"); s.add_argument("slug"); s.set_defaults(fn=cmd_export)
     s = sub.add_parser("site"); s.set_defaults(fn=cmd_site)
     s = sub.add_parser("cloud"); s.set_defaults(fn=cmd_cloud)
+    s = sub.add_parser("pull"); s.add_argument("--url"); s.set_defaults(fn=cmd_pull)
     s = sub.add_parser("publish"); s.set_defaults(fn=cmd_publish)
     a = p.parse_args()
     if not a.cmd:

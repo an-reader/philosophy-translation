@@ -1,0 +1,17 @@
+{
+  "real": {
+    "databaseId": "",
+    "teamDomain": "",
+    "aud": ""
+  },
+  "preview": {
+    "databaseId": "",
+    "teamDomain": "",
+    "aud": ""
+  },
+  "_where": {
+    "databaseId": "The id printed by `cf d1 create` (one database for each target).",
+    "teamDomain": "https://<team>.cloudflareaccess.com: Zero Trust dashboard, Settings, Custom Pages, Team domain.",
+    "aud": "The Application Audience (AUD) tag of that target's Access application: Zero Trust, Access, Applications, the application, Overview."
+  }
+}

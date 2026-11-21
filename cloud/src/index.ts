@@ -194,6 +194,23 @@ async function glossary(slug: string): Promise<unknown> {
   return JSON.parse((await book(slug)).glossary as string);
 }
 
+// Everything `python3 tr.py pull` needs from one book, in one call; unlike a chapter read, it leaves `last` alone.
+async function work(slug: string): Promise<unknown> {
+  const [bs, vs, ms] = await env.DB.batch<Row>([
+    env.DB.prepare(`SELECT coalesce(w.state, '{}') AS state, coalesce(w.titles, '{}') AS titles, coalesce(w.glossary, '[]') AS glossary
+      FROM books b LEFT JOIN book_work w ON w.slug = b.slug WHERE b.slug = ?`).bind(slug),
+    env.DB.prepare("SELECT n, id, data FROM vi WHERE slug = ? ORDER BY n, id").bind(slug),
+    env.DB.prepare("SELECT n, data FROM memos WHERE slug = ? ORDER BY n, seg, off, created, seq").bind(slug),
+  ]);
+  if (!bs.results.length) throw new NotFound();
+  const vi: Record<string, Record<string, unknown>> = {};
+  for (const r of vs.results) (vi[String(r.n)] ??= {})[r.id as string] = JSON.parse(r.data as string);
+  const memos: Record<string, unknown[]> = {};
+  for (const r of ms.results) (memos[String(r.n)] ??= []).push(JSON.parse(r.data as string));
+  const b = bs.results[0];
+  return { state: JSON.parse(b.state as string), titles: JSON.parse(b.titles as string), glossary: JSON.parse(b.glossary as string), vi, memos };
+}
+
 async function route(parts: string[]): Promise<unknown> {
   const [api, kind, slug, n] = parts;
   if (api !== "api") throw new NotFound();
@@ -203,6 +220,7 @@ async function route(parts: string[]): Promise<unknown> {
   if (parts.length === 4 && kind === "memos") return memos(slug, toInt(n));
   if (parts.length === 3 && kind === "memos") return allMemos(slug);
   if (parts.length === 3 && kind === "glossary") return glossary(slug);
+  if (parts.length === 3 && kind === "work") return work(slug);
   throw new NotFound();
 }
 
@@ -253,6 +271,7 @@ async function saveMemo(slug: string, n: number, data: Obj): Promise<unknown> {
   const stmts: D1PreparedStatement[] = [];
   const sel = env.DB.prepare("SELECT data FROM memos WHERE slug = ? AND n = ? ORDER BY seg, off, created, seq").bind(slug, n);
   if (truthy(pyGet(data, "delete", undefined))) {
+    if (typeof data.delete !== "string") throw new Bad(); // a memo id is text
     stmts.push(env.DB.prepare("DELETE FROM memos WHERE slug = ? AND n = ? AND id = ?").bind(slug, n, data.delete));
   } else {
     const body = pyStr(pyReq(data, "body")).trim();

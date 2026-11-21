@@ -22,18 +22,22 @@ A workspace for translating classical philosophy into Vietnamese, and the read-o
 - `python3 tr.py check`: the gate; its exit code is the verdict.
 - `python3 tr.py site`: builds `site/` (ignored), the same command CI runs.
 - The API without side effects: import `tr`, serve `tr.Handler` on `127.0.0.1` port 0 in a thread, send GETs, shut it down. Never `tr.py start` for a test: it makes a git commit.
-- The Worker, in `cloud/`: `pnpm run typecheck`, `pnpm test` (the Access check), and `python3 cloud/parity.py`, which compares every GET and a fixed sequence of writes between `tr.py` (on a scratch copy of `books/`) and the Worker under `cf dev`. Parity rebuilds the local D1 in `cloud/.cloudflare/state` from scratch.
+- The Worker, in `cloud/`: `pnpm run typecheck`, `pnpm test` (the Access check), and `python3 cloud/parity.py`, which compares every GET and a fixed sequence of writes between `tr.py` (on a scratch copy of `books/`) and the Worker under `cf dev`, then the `tr.py pull` round trips. Parity keeps its local D1 in its own scratch folder (`CF_PERSIST_TO`).
 - `cf dev` in the sandbox: its dev registry under `~/Library/Preferences/cloudflare` is denied, and its file watcher runs out of file handles. A run sets `CLOUDFLARE_DEV_REGISTRY_PATH` and `XDG_CONFIG_HOME` to a scratch folder and `CHOKIDAR_USEPOLLING=1`, as `parity.py` does.
 
 ## Side effects
 
 - `tr.py start` makes a signed git commit of `books/` when it starts and when it stops.
 - `tr.py publish` runs `git add -A`, commits and pushes. The owner runs it; a session never does.
-- `GET /api/chapter/<slug>/<n>` rewrites `last.json`.
+- `GET /api/chapter/<slug>/<n>` rewrites `last.json` (the Worker: its `last` row).
+- `tr.py pull` rewrites the owner's work files in `books/` from the online database; it refuses while `books/` has uncommitted changes.
+- `bash cloud/load-remote.sh <preview|real> work` replaces all online work of that target; it asks the owner to type the target's name.
 
 ## Ship
 
 - A push to `main` starts `.github/workflows/pages.yml`, the only workflow: `tr.py site`, then a deploy to GitHub Pages, https://an-reader.github.io/philosophy-translation/.
+- Cloudflare, run by the owner from `cloud/` after `python3 tr.py cloud`: `pnpm exec cf deploy --mode preview` (the preview Worker, its own database) and `pnpm exec cf deploy` (the real one). The account's values live in `cloud/deploy.json`, ignored by git; `deploy.example.json` shows its shape. `cf previews deploy` is refused by the config: it would reuse the real database.
+- On `workers.dev`, Cloudflare's Browser Integrity Check refuses Python's default `urllib` user agent (error 1010) before the Worker runs: a script calling the Worker sends a descriptive `User-Agent`.
 - A changed workflow: `actionlint` first, then `act` in the owner's terminal (`runs-on` is `ubuntu-latest`), then GitHub's own run is the verdict.
 
 ## Public

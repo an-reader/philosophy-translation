@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "cf dev",
     "build": "cf build",
-    "typecheck": "cf workers types && tsc --noEmit",
+    "typecheck": "cf workers types --mode development && tsc --noEmit",
     "test": "node --test test/access.test.ts",
     "parity": "python3 parity.py"
   },
