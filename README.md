@@ -4,7 +4,7 @@ Vietnamese translations of classical philosophy, in progress. The website is rea
 
 ## Translating
 
-Run `python3 tr.py start` on your computer. See [PROCESS.md](PROCESS.md).
+Translate in the online workspace, then run `python3 tr.py pull` and `python3 tr.py publish` on your computer. `python3 tr.py start` is read-only once the workspace is online. See [PROCESS.md](PROCESS.md).
 
 ## Credits
 

@@ -28,6 +28,7 @@ A workspace for translating classical philosophy into Vietnamese, and the read-o
 ## Side effects
 
 - `tr.py start` makes a signed git commit of `books/` when it starts and when it stops.
+- The committed file `cloud/ONLINE` means the online database is the record: `tr.py start` then opens read-only and its server refuses every POST. Deleting the file and committing that is the only way back.
 - `tr.py publish` runs `git add -A`, commits and pushes. The owner runs it; a session never does.
 - `GET /api/chapter/<slug>/<n>` rewrites `last.json` (the Worker: its `last` row).
 - `tr.py pull` rewrites the owner's work files in `books/` from the online database; it refuses while `books/` has uncommitted changes.

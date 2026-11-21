@@ -44,7 +44,11 @@ Done, with their agent time (the size for the next run of the same kind):
 
 Step 8, first try: the preview was created, loaded and deployed, but Access could not be turned on, because Zero Trust was not set up on the account. The Worker refused every request, as designed. The owner chose an access key instead: built and reviewed, about 7 minutes of agent time.
 
-Next: step 8 again (deploy, set the key, sign in).
+Steps 8 and 9: done. The preview runs with its own database and key, and the owner's look passed: sign-in, a saved word surviving a reload, and the phone's read-only view.
+
+Before the cutover: once online, `tr.py start` turns read-only, keyed on the committed marker `cloud/ONLINE`, so a local edit cannot be overwritten by the next `pull`. PROCESS.md and README describe the online routine. Built and reviewed, about 2 minutes of agent time; `cloud/ONLINE` is created at the cutover.
+
+Next: step 10, the cutover.
 
 ## The four stages
 
@@ -58,6 +62,15 @@ Next: step 8 again (deploy, set the key, sign in).
 
   Gap: no screenshot walk (the project has no browser tests); the owner's computer and phone are the walk.
 - **Pre-production:** the preview Worker and its own database.
+
+## Carry to the kit
+
+Cloudflare notes that hold in any project, for `stacks.md`, to be written in a session opened in the kit's root:
+
+- Cloudflare Access on a Worker needs Zero Trust turned on first, and its setup asks for payment details even on the Free plan; an email-domain policy is Access too.
+- `cf workers secrets update` takes a secret's value only as an argument; set secrets in the dashboard instead.
+- `workers.dev` refuses Python's default `urllib` user agent (error 1010) before the Worker runs; a script sends a descriptive `User-Agent`.
+- `cf build` has no `--outDir`: a must-fail check reads the failure's own message, or an unknown option passes for the expected failure.
 
 ## Later
 

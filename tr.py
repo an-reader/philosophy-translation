@@ -23,6 +23,11 @@ SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 STATUSES = ("todo", "draft", "reviewed", "final")
 
 
+def is_online():
+    """True once the online workspace is the record of the owner's work: the committed file cloud/ONLINE exists (only its presence counts)."""
+    return (ROOT / "cloud" / "ONLINE").exists()
+
+
 def read_json(path, default):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -312,6 +317,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"error": "not found"}, 404)
 
     def do_POST(self):
+        if is_online():
+            return self.send_json({"error": "read-only"}, 403)
         origin = self.headers.get("Origin")
         if origin and urlparse(origin).netloc != self.headers.get("Host"):
             return self.send_json({"error": "forbidden"}, 403)
@@ -354,8 +361,11 @@ def checkpoint():
 
 def cmd_start(a):
     checkpoint()
+    online = is_online()
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
-    url = f"http://127.0.0.1:{a.port}/"
+    url = f"http://127.0.0.1:{a.port}/" + ("?readonly=1" if online else "")
+    if online:
+        print("The online workspace is the record. This local copy is read-only: translate online, then run python3 tr.py pull.")
     print(f"Workspace: {url}\nPress Ctrl+C to stop.")
     if not a.no_open:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()

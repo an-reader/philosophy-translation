@@ -4,14 +4,17 @@ The same process applies to every book. Your job is reading and translating. The
 
 ## Start working
 
-```bash
-cd ~/works/co-work/experiments/philosophy-translation
-python3 tr.py start
-```
+You translate in the online workspace, in your browser, on a computer.
 
-The workspace opens in your browser and returns to where you stopped. Stop it with Ctrl+C. Your work saves as you type.
+1. **Open it.** The workspace address is kept in your password manager, next to the access key. Open the address in your browser.
+2. **Sign in with the key.** Paste the access key once. The browser remembers it, so you sign in once per browser, not every session.
+3. **Translate.** The workspace returns to where you stopped. Your work saves as you type, into the online database.
+
+A phone is read-only. It is for reading a chapter with the source and the reference beside it, never for typing.
 
 ## The daily loop
+
+Do the loop in the online workspace.
 
 1. **Read first.** Read the whole passage before typing. Open **Reference** if you are stuck.
 2. **Translate a small piece.** Fifteen minutes and a few paragraphs is a valid session. Press `Cmd+Enter` to move to the next segment.
@@ -77,7 +80,18 @@ This writes a reader page to `dist/`. Before publishing, check the edition's lic
 
 ## Publish to the web
 
-Translating happens only on your computer. The website is read-only. To update it after a session:
+From now on your work lives online, in the workspace's database. The files in `books/` on your computer are a copy. After a session, bring the copy up to date and publish it:
+
+1. **Copy the access key** from your password manager.
+2. **Pull your work** into `books/`:
+
+```bash
+pbpaste | python3 tr.py pull
+```
+
+   The key goes in from the clipboard, so it never appears on screen or in your shell history. `pull` also needs the workspace address, which it reads from the `TR_CLOUD_URL` setting. Set it once in your shell's startup file (`~/.zshrc`) on your own computer, with the address from your password manager. Never write the address into a file in this repository: it is public.
+
+3. **Publish:**
 
 ```bash
 python3 tr.py publish
@@ -85,8 +99,11 @@ python3 tr.py publish
 
 This commits your work and pushes it to GitHub. GitHub Actions then rebuilds the site, usually within a few minutes.
 
+- **When `pull` refuses.** It stops, and changes nothing, when `books/` has changes that are not committed, because pulling would replace them without a word. Look at the list it prints. The online work is the record, so whatever is in that list is lost at the next pull unless you first type it into the online workspace. Ask Claude to look at the list before you commit or discard anything.
+- **`python3 tr.py start` is now read-only.** Once the online workspace is the record, the local workspace opens for reading only and says so. Typing there would be overwritten by the next `pull`, so it refuses to save. Translate online instead. To go back to translating on your computer, delete the file `cloud/ONLINE` and commit that: a deliberate step, never a setting you flip by accident.
+- **The preview workspace** is a second copy of the workspace, with its own database and its own key. Use it to try a change, and type freely there. It is never pulled, and nothing in it reaches `books/` or the site.
 - **Everything in this repository is public**, including drafts, notes, memos and `NOTES.md`. The website does not show notes or memos, but anyone can read them in the repository. `archive/` stays on your computer.
-- **Using another PC:** run `git pull` before you start, and `python3 tr.py publish` when you finish.
+- **Using another PC:** open the online workspace from it; nothing to install. To publish from it, run `git pull` first, then `pull` and `publish` as above.
 - **Preview the site locally:** run `python3 tr.py site`, then open `site/index.html`.
 
 ## Add a new book
