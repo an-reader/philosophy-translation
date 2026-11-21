@@ -8,10 +8,10 @@
   python3 tr.py export <slug>                     write dist/<slug>.html, a reader you can share
   python3 tr.py site                              build the read-only website into site/
   python3 tr.py cloud                             write cloud/.build/: texts.sql, work.sql (D1 data) and the Worker's page
-  python3 tr.py pull [--url URL]                  write the online work (from the Worker) into books/ (URL: TR_CLOUD_URL)
+  python3 tr.py pull [--url URL]                  write the online work (from the Worker) into books/ (URL: TR_CLOUD_URL; key: TR_CLOUD_KEY, stdin or asked)
   python3 tr.py publish                           commit your work and push it to GitHub
 """
-import argparse, html, json, os, re, shutil, subprocess, urllib.error, urllib.request, uuid, sys, tempfile, threading, time, webbrowser
+import argparse, getpass, html, json, os, re, shutil, subprocess, urllib.error, urllib.request, uuid, sys, tempfile, threading, time, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -654,20 +654,36 @@ def cmd_cloud(a):
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kw):
-        return None  # an Access login page is a refusal; the token never follows a redirect
+        return None  # a redirect is a refusal; the key never follows one
 
 
-def pull_fetch(base, slug):
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def pull_key(base):
+    """The Worker's access key: TR_CLOUD_KEY if set, else stdin when it is not a terminal (pbpaste | python3 tr.py pull), else asked
+    without echo. Against a loopback address (a local cf dev) no key is needed and none is asked for. Never printed."""
+    key = os.environ.get("TR_CLOUD_KEY", "").strip()
+    if not key and not sys.stdin.isatty():
+        key = sys.stdin.read().strip()
+    if not key and urlparse(base).hostname not in LOOPBACK_HOSTS:
+        key = getpass.getpass("Access key: ").strip()
+        if not key:
+            sys.exit("No access key given; nothing was sent or changed.")
+    return key
+
+
+def pull_fetch(base, slug, key=""):
     headers = {"Accept": "application/json", "User-Agent": "philosophy-translation-pull/1"}  # workers.dev refuses urllib's default (error 1010)
-    cid, secret = os.environ.get("CF_ACCESS_CLIENT_ID"), os.environ.get("CF_ACCESS_CLIENT_SECRET")
-    if cid and secret:
-        headers["CF-Access-Client-Id"], headers["CF-Access-Client-Secret"] = cid, secret
+    if key:
+        headers["Authorization"] = "Bearer " + key
     req = urllib.request.Request(f"{base.rstrip('/')}/api/work/{slug}", headers=headers)
     try:
         with urllib.request.build_opener(_NoRedirect).open(req, timeout=60) as r:
             data = json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        sys.exit(f"{slug}: the server answered {e.code}" + (" (a redirect to a login page: check the Access service token)" if 300 <= e.code < 400 else ""))
+        hint = " (the key was refused: check TR_CLOUD_KEY or the key you gave)" if e.code == 401 else " (a redirect: check the address)" if 300 <= e.code < 400 else ""
+        sys.exit(f"{slug}: the server answered {e.code}{hint}")
     except (urllib.error.URLError, OSError, ValueError) as e:
         sys.exit(f"{slug}: cannot read the work: {getattr(e, 'reason', e)}")
     if not isinstance(data, dict) or not all(k in data for k in ("state", "titles", "glossary", "vi", "memos")):
@@ -681,8 +697,9 @@ def cmd_pull(a):
     if not base:
         sys.exit("No address: pass --url URL or set TR_CLOUD_URL.")
     u = urlparse(base)
-    if os.environ.get("CF_ACCESS_CLIENT_ID") and os.environ.get("CF_ACCESS_CLIENT_SECRET") and u.scheme != "https" and (u.scheme != "http" or u.hostname not in ("127.0.0.1", "localhost", "::1")):
-        sys.exit("Refusing to send the Access service token over plain http to a host that is not this computer; use the https:// address. Nothing was sent or changed.")
+    if u.scheme != "https" and not (u.scheme == "http" and u.hostname in LOOPBACK_HOSTS):
+        # The key is only ever sent over https, or over http to this computer. A remote http address is refused before the key is read.
+        sys.exit("Refusing to send the access key over plain http to a host that is not this computer; use the https:// address. Nothing was sent or changed.")
     try:
         dirty = subprocess.run(["git", "status", "--porcelain", "--", "books"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
     except (subprocess.CalledProcessError, OSError):
@@ -690,7 +707,8 @@ def cmd_pull(a):
     if dirty.strip():
         sys.exit("books/ has changes that are not committed; nothing was changed. Commit them (python3 tr.py publish) or set them aside, then pull again.\n" + dirty.rstrip())
     slugs = all_slugs()
-    fetched = {slug: pull_fetch(base, slug) for slug in slugs}  # every book is read before any file is written
+    key = pull_key(base)
+    fetched = {slug: pull_fetch(base, slug, key) for slug in slugs}  # every book is read before any file is written
     changed = []
 
     def put(path, data):

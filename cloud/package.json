@@ -6,7 +6,7 @@
     "dev": "cf dev",
     "build": "cf build",
     "typecheck": "cf workers types --mode development && tsc --noEmit",
-    "test": "node --test test/access.test.ts",
+    "test": "node --test test/auth.test.ts",
     "parity": "python3 parity.py"
   },
   "devDependencies": {
@@ -14,8 +14,5 @@
     "cf": "1.0.0-rc.2",
     "typescript": "^7.0.2",
     "vite": "^8.3.8"
-  },
-  "dependencies": {
-    "jose": "^6.2.18"
   }
 }

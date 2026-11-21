@@ -7,6 +7,7 @@ One invocation does everything and leaves nothing running:
   3. starts `cf dev` (bounded by a deadline and killed in the finally block) and tr.Handler in a thread on port 0,
   4. GETs every endpoint for every book and chapter, runs one fixed sequence of POSTs against both, GETs everything again,
   5. pulls the work back with `python3 tr.py pull` (a copy of tr.py in a scratch git repository) twice, see round_trip_*,
+  5b. restarts `cf dev` with the bypass off and a test key (TR_DEV_ACCESS_KEY) and runs the login, the cookie, Bearer and the pull's key paths end to end,
   6. compares status codes and parsed JSON, prints the first differences, exits 1 on any, 2 on a setup failure.
 
 Left out of the comparison, by design: the `updated` and `created` fields and memo ids (clock and random values).
@@ -14,7 +15,7 @@ Left out of the comparison, by design: the `updated` and `created` fields and me
 
   python3 /abs/path/to/cloud/parity.py
 """
-import json, os, shutil, signal, socket, subprocess, sys, tempfile, threading, time, http.client
+import json, os, secrets, shutil, signal, socket, subprocess, sys, tempfile, threading, time, http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -119,6 +120,15 @@ def start_cf_dev(port, env, logfile, persist):
     return p
 
 
+def stop(proc):
+    if proc and proc.poll() is None:
+        os.killpg(proc.pid, signal.SIGTERM)
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -180,18 +190,16 @@ def main():
         round_trip_seed(cmp, scratch, worker_url, env)
         run_checks(cmp, py, wk)
         round_trip_writes(cmp, scratch, worker_url, env)
+        stop(proc)  # the bypass is on for everything above; the key login is tested on a second `cf dev` with it off
+        proc = None
+        proc = key_login(cmp, scratch, env, state)
         log(f"{cmp.n} comparisons; left out: the fields {IGNORED} and memo ids")
         for m in cmp.bad[:8]:
             log("DIFF", m)
         log(f"{len(cmp.bad)} differences")
         return 1 if cmp.bad else 0
     finally:
-        if proc and proc.poll() is None:
-            os.killpg(proc.pid, signal.SIGTERM)
-            try:
-                proc.wait(10)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
+        stop(proc)
         if httpd:
             httpd.shutdown()
         shutil.rmtree(scratch, ignore_errors=True)
@@ -233,12 +241,13 @@ def make_root(scratch, name):
     return root
 
 
-def run_tr(root, *args, url=None, env=None):
-    e = {k: v for k, v in os.environ.items() if not k.startswith("CF_ACCESS") and k != "TR_CLOUD_URL"}
+def run_tr(root, *args, url=None, env=None, stdin=""):
+    """stdin is what the pull reads as its key when TR_CLOUD_KEY is not set; empty by default, never the parent's stdin."""
+    e = {k: v for k, v in os.environ.items() if not k.startswith("CF_ACCESS") and k not in ("TR_CLOUD_URL", "TR_CLOUD_KEY")}
     e.update(env or {})
     if url:
         e["TR_CLOUD_URL"] = url
-    return subprocess.run([sys.executable, "-I", str(root / "tr.py"), *args], cwd=root, env=e, capture_output=True, text=True, timeout=300)
+    return subprocess.run([sys.executable, "-I", str(root / "tr.py"), *args], cwd=root, env=e, input=stdin, capture_output=True, text=True, timeout=300)
 
 
 def check(cmp, label, ok, detail=""):
@@ -261,8 +270,8 @@ def round_trip_seed(cmp, scratch, url, env):
                    cwd=root, capture_output=True, check=True)
     again = run_tr(root, "pull", url=url)  # the guard needs a committed tree; a second pull then changes nothing
     check(cmp, "pull-seed second pull", again.returncode == 0 and "Nothing changed" in again.stdout, again.stdout[-200:])
-    # no token variables, no header: the Worker under cf dev needed none. With variables set and a wrong URL, the secret is not printed.
-    bad = run_tr(root, "pull", url="http://127.0.0.1:9", env={"CF_ACCESS_CLIENT_ID": "id-visible", "CF_ACCESS_CLIENT_SECRET": "secret-hidden"})
+    # no key, no header: the Worker under cf dev (bypass on) needed none. With a key set and a wrong URL, the key is not printed.
+    bad = run_tr(root, "pull", url="http://127.0.0.1:9", env={"TR_CLOUD_KEY": "secret-hidden"})
     check(cmp, "pull-unreachable", bad.returncode != 0 and "secret-hidden" not in bad.stdout + bad.stderr, bad.stderr[-200:])
     ua_checks(cmp, root)
     # 4. the guard: a dirty books/ is refused and nothing changes
@@ -280,8 +289,9 @@ def round_trip_seed(cmp, scratch, url, env):
 
 
 def ua_checks(cmp, root):
-    """A stub server on 127.0.0.1 records one pull's headers: the User-Agent is descriptive. And the token is never sent over plain http
-    to a non-loopback host: the pull exits non-zero without a connection, and prints no secret."""
+    """A stub server on 127.0.0.1 records pulls' headers: the User-Agent is descriptive; without a key no Authorization is sent; with TR_CLOUD_KEY
+    or a key on stdin it is `Bearer <key>`. And the key is never sent over plain http to a non-loopback host: the pull exits non-zero
+    without a connection, and prints no secret."""
     seen = []
 
     class Stub(BaseHTTPRequestHandler):
@@ -297,17 +307,91 @@ def ua_checks(cmp, root):
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
     try:
-        run_tr(root, "pull", url=f"http://127.0.0.1:{httpd.server_address[1]}")
+        stub = f"http://127.0.0.1:{httpd.server_address[1]}"
+        run_tr(root, "pull", url=stub)
+        run_tr(root, "pull", url=stub, env={"TR_CLOUD_KEY": "key-from-env"})
+        run_tr(root, "pull", url=stub, stdin="key-from-stdin\n")
+        run_tr(root, "pull", url=stub, env={"TR_CLOUD_KEY": "key-from-env"}, stdin="ignored\n")
     finally:
         httpd.shutdown()
         httpd.server_close()
         t.join(10)
     check(cmp, "pull user agent", bool(seen) and seen[0].get("User-Agent") == "philosophy-translation-pull/1", str(seen[:1]))
-    tok = {"CF_ACCESS_CLIENT_ID": "id-fake", "CF_ACCESS_CLIENT_SECRET": "secret-fake"}
-    r = run_tr(root, "pull", url="http://example.invalid", env=tok)
+    check(cmp, "pull sends no header without a key", len(seen) == 4 and "Authorization" not in seen[0], str(seen[:1]))
+    check(cmp, "pull key from the environment", len(seen) == 4 and seen[1].get("Authorization") == "Bearer key-from-env", str(seen[1:2]))
+    check(cmp, "pull key from stdin", len(seen) == 4 and seen[2].get("Authorization") == "Bearer key-from-stdin", str(seen[2:3]))
+    check(cmp, "pull key: the environment wins over stdin", len(seen) == 4 and seen[3].get("Authorization") == "Bearer key-from-env", str(seen[3:4]))
+    r = run_tr(root, "pull", url="http://example.invalid", env={"TR_CLOUD_KEY": "secret-fake"})
     out = r.stdout + r.stderr
-    check(cmp, "pull token over http refused", r.returncode != 0 and "https://" in out and "secret-fake" not in out and "cannot read" not in out, out[-200:])
-    log("round trip 5: the pull sends a descriptive User-Agent; the token over plain http to a remote host is refused before any request")
+    check(cmp, "pull key over http refused", r.returncode != 0 and "https://" in out and "secret-fake" not in out and "cannot read" not in out, out[-200:])
+    log("round trip 5: the pull sends a descriptive User-Agent and its key as Bearer (environment, then stdin); the key over plain http to a remote host is refused before any request")
+
+
+def key_login(cmp, scratch, env, state):
+    """The key login end to end on a second `cf dev` with the bypass off and a test key (TR_DEV_ACCESS_KEY, read only in development mode).
+    Returns the new process, for the caller to stop."""
+    key = secrets.token_urlsafe(32)
+    port = free_port()
+    logfile = open(scratch / "cf-dev-key.log", "wb")
+    proc = start_cf_dev(port, dict(env, TR_DEV_ACCESS_KEY=key), logfile, state)
+    base = f"http://127.0.0.1:{port}"
+
+    def req(method, path, body=None, headers=None):
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
+        h = dict(headers or {})
+        data = json.dumps(body).encode() if body is not None else None
+        if data is not None:
+            h["Content-Type"] = "application/json"
+        c.request(method, path, body=data, headers=h)
+        r = c.getresponse()
+        raw = r.read()
+        out = (r.status, r.getheader("Set-Cookie"), json.loads(raw) if raw else None)
+        c.close()
+        return out
+
+    while True:
+        if time.time() > DEADLINE:
+            die("cf dev (key login) did not answer in time")
+        if proc.poll() is not None:
+            die("cf dev (key login) exited: " + (scratch / "cf-dev-key.log").read_text(errors="replace")[-600:])
+        try:
+            if req("GET", "/api/books")[0] in (200, 401):
+                break
+        except OSError:
+            pass
+        time.sleep(1)
+    log(f"cf dev with the bypass off answers on 127.0.0.1:{port}")
+    check(cmp, "key: no credentials", req("GET", "/api/books")[::2] == (401, {"error": "unauthorized"}))
+    check(cmp, "key: POST without credentials", req("POST", "/api/seg/plato-republic/1", {"id": "x"})[0] == 401)
+    st, ck, _ = req("POST", "/api/login", {"key": "wrong" * 8})
+    check(cmp, "key: wrong key at login", st == 401 and ck is None)
+    st, ck, body = req("POST", "/api/login", {"key": key})
+    attrs = (ck or "").split("; ")
+    check(cmp, "key: right key at login", st == 200 and body == {"ok": True} and attrs[0].startswith("session=") and attrs[1:] == ["HttpOnly", "Secure", "SameSite=Strict", "Path=/", "Max-Age=34560000"] and key not in (ck or ""), str(st) + " " + str(attrs[1:]))
+    cookie = attrs[0]
+    check(cmp, "key: the cookie passes", req("GET", "/api/books", headers={"Cookie": cookie})[0] == 200)
+    check(cmp, "key: a forged cookie fails", req("GET", "/api/books", headers={"Cookie": "session=" + cookie[8:][::-1]})[0] == 401)
+    check(cmp, "key: Bearer passes", req("GET", "/api/books", headers={"Authorization": "Bearer " + key})[0] == 200)
+    check(cmp, "key: a wrong Bearer fails", req("GET", "/api/books", headers={"Authorization": "Bearer " + key[::-1]})[0] == 401)
+    check(cmp, "key: a POST with the cookie works", req("POST", "/api/glossary/nope", {"items": []}, {"Cookie": cookie})[0] == 400)
+    check(cmp, "key: a cross-origin login is refused", req("POST", "/api/login", {"key": key}, {"Origin": "http://evil.example"})[0] == 403)
+    st, ck, _ = req("POST", "/api/logout")
+    check(cmp, "key: logout clears the cookie", st == 200 and (ck or "").startswith("session=;") and "Max-Age=0" in (ck or ""))
+    # the pull against a Worker that wants the key
+    root = make_root(scratch, "pull-key")
+    out = lambda r: r.stdout + r.stderr
+    r = run_tr(root, "pull", url=base)
+    check(cmp, "key: pull without a key is refused", r.returncode != 0 and "401" in out(r), out(r)[-200:])
+    r = run_tr(root, "pull", url=base, env={"TR_CLOUD_KEY": key[::-1]})
+    check(cmp, "key: pull with a wrong key is refused", r.returncode != 0 and "401" in out(r) and key not in out(r) and key[::-1] not in out(r), out(r)[-200:])
+    r = run_tr(root, "pull", url=base, env={"TR_CLOUD_KEY": key})
+    check(cmp, "key: pull with TR_CLOUD_KEY", r.returncode == 0 and key not in out(r), out(r)[-200:])
+    subprocess.run(["git", "add", "-A"], cwd=root, capture_output=True, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "pulled"], cwd=root, capture_output=True, check=True)
+    r = run_tr(root, "pull", url=base, stdin=key + "\n")
+    check(cmp, "key: pull with the key on stdin", r.returncode == 0 and "Nothing changed" in r.stdout and key not in out(r), out(r)[-200:])
+    log("key login: 401 without credentials, wrong key refused, cookie attributes exact, cookie and Bearer pass, forged ones fail, logout clears, pull by environment and stdin works")
+    return proc
 
 
 def parsed_work(books):
@@ -457,7 +541,6 @@ def run_checks(cmp, py, wk):
     # everything again, after the writes
     all_gets(cmp)
     cmp.both("last-final", "GET", "/api/books")
-    # an Access-less POST on a page path is not the Worker's business; nothing to compare there
 
 
 if __name__ == "__main__":

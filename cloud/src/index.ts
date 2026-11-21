@@ -1,7 +1,7 @@
 import { env as workerEnv } from "cloudflare:workers";
-import { accessAllows, type AccessEnv } from "./access.ts";
+import { gate, sameOrigin, type AuthEnv } from "./auth.ts";
 
-const env = workerEnv as typeof workerEnv & AccessEnv & { TZ_OFFSET_HOURS?: string };
+const env = workerEnv as typeof workerEnv & AuthEnv & { TZ_OFFSET_HOURS?: string };
 
 // The API of tr.py's Handler (GET and POST, same JSON), answered from D1. Segments come from tr.py's own parser
 // (loaded into D1 by `python3 tr.py cloud`); this file only reads them back.
@@ -371,19 +371,10 @@ async function post(parts: string[], request: Request): Promise<unknown> {
   throw new Bad();
 }
 
-function sameOrigin(request: Request): boolean {
-  const origin = request.headers.get("origin");
-  if (!origin) return true;
-  let netloc = "";
-  try {
-    netloc = new URL(origin).host;
-  } catch { /* an unparseable Origin never matches */ }
-  return netloc === request.headers.get("host");
-}
-
 export default {
   async fetch(request: Request): Promise<Response> {
-    if (!(await accessAllows(request, env))) return json({ error: "unauthorized" }, 401);
+    const gated = await gate(request, env); // the key login: /api/login, /api/logout, and a 401 for anything without a session
+    if (gated) return gated;
     if (request.method !== "GET" && request.method !== "POST") return json({ error: "method not allowed" }, 405);
     try {
       if (request.method === "POST") {
