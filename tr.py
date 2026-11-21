@@ -658,7 +658,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def pull_fetch(base, slug):
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", "User-Agent": "philosophy-translation-pull/1"}  # workers.dev refuses urllib's default (error 1010)
     cid, secret = os.environ.get("CF_ACCESS_CLIENT_ID"), os.environ.get("CF_ACCESS_CLIENT_SECRET")
     if cid and secret:
         headers["CF-Access-Client-Id"], headers["CF-Access-Client-Secret"] = cid, secret
@@ -680,6 +680,9 @@ def cmd_pull(a):
     base = a.url or os.environ.get("TR_CLOUD_URL")
     if not base:
         sys.exit("No address: pass --url URL or set TR_CLOUD_URL.")
+    u = urlparse(base)
+    if os.environ.get("CF_ACCESS_CLIENT_ID") and os.environ.get("CF_ACCESS_CLIENT_SECRET") and u.scheme != "https" and (u.scheme != "http" or u.hostname not in ("127.0.0.1", "localhost", "::1")):
+        sys.exit("Refusing to send the Access service token over plain http to a host that is not this computer; use the https:// address. Nothing was sent or changed.")
     try:
         dirty = subprocess.run(["git", "status", "--porcelain", "--", "books"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
     except (subprocess.CalledProcessError, OSError):

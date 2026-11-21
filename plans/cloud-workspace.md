@@ -39,7 +39,9 @@ Done, with their agent time (the size for the next run of the same kind):
 - The review's fixes and step 6: about 7 minutes. Fixed: a second Worker and database for the preview, account values in the ignored `cloud/deploy.json`, a build that refuses while a value is empty, `cloud/load-remote.sh` for the remote load, a memo delete answering 400, load files cut by bytes, and parity keeping its own local database.
 - Step 7: about 2 minutes. The owner's look at it on a computer is open.
 
-Before step 8: `tr.py pull` must send a descriptive `User-Agent`, since `workers.dev` refuses Python's default one (error 1010).
+- `tr.py pull` sends a descriptive `User-Agent`, since `workers.dev` refuses Python's default one (error 1010), and it never sends the service token over plain `http` except to this computer: about 1 minute.
+
+Next: step 8, the owner's preview setup.
 
 Access comes from the Worker's **Access** tab in the dashboard, which exists only after a first deploy. So the first deploy of each Worker carries a placeholder `aud`, which refuses everyone, and a second deploy carries the real one.
 

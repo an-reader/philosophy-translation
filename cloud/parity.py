@@ -15,7 +15,7 @@ Left out of the comparison, by design: the `updated` and `created` fields and me
   python3 /abs/path/to/cloud/parity.py
 """
 import json, os, shutil, signal, socket, subprocess, sys, tempfile, threading, time, http.client
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 CLOUD = Path(__file__).resolve().parent
@@ -264,6 +264,7 @@ def round_trip_seed(cmp, scratch, url, env):
     # no token variables, no header: the Worker under cf dev needed none. With variables set and a wrong URL, the secret is not printed.
     bad = run_tr(root, "pull", url="http://127.0.0.1:9", env={"CF_ACCESS_CLIENT_ID": "id-visible", "CF_ACCESS_CLIENT_SECRET": "secret-hidden"})
     check(cmp, "pull-unreachable", bad.returncode != 0 and "secret-hidden" not in bad.stdout + bad.stderr, bad.stderr[-200:])
+    ua_checks(cmp, root)
     # 4. the guard: a dirty books/ is refused and nothing changes
     for kind in ("modified", "untracked"):
         f = root / "books" / "plato-republic" / ("vi/001.json" if kind == "modified" else "vi/099.json")
@@ -276,6 +277,37 @@ def round_trip_seed(cmp, scratch, url, env):
         subprocess.run(["git", "checkout", "-q", "--", "books"], cwd=root, check=True)
         subprocess.run(["git", "clean", "-fdq", "--", "books"], cwd=root, check=True)
     log("round trip 4: the guard refused a modified and an untracked file, and changed nothing")
+
+
+def ua_checks(cmp, root):
+    """A stub server on 127.0.0.1 records one pull's headers: the User-Agent is descriptive. And the token is never sent over plain http
+    to a non-loopback host: the pull exits non-zero without a connection, and prints no secret."""
+    seen = []
+
+    class Stub(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(dict(self.headers))
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Stub)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        run_tr(root, "pull", url=f"http://127.0.0.1:{httpd.server_address[1]}")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        t.join(10)
+    check(cmp, "pull user agent", bool(seen) and seen[0].get("User-Agent") == "philosophy-translation-pull/1", str(seen[:1]))
+    tok = {"CF_ACCESS_CLIENT_ID": "id-fake", "CF_ACCESS_CLIENT_SECRET": "secret-fake"}
+    r = run_tr(root, "pull", url="http://example.invalid", env=tok)
+    out = r.stdout + r.stderr
+    check(cmp, "pull token over http refused", r.returncode != 0 and "https://" in out and "secret-fake" not in out and "cannot read" not in out, out[-200:])
+    log("round trip 5: the pull sends a descriptive User-Agent; the token over plain http to a remote host is refused before any request")
 
 
 def parsed_work(books):
