@@ -7,6 +7,7 @@
   python3 tr.py status                            show progress
   python3 tr.py export <slug>                     write dist/<slug>.html, a reader you can share
   python3 tr.py site                              build the read-only website into site/
+  python3 tr.py cloud                             write cloud/.build/: texts.sql, work.sql (D1 data) and the Worker's page
   python3 tr.py publish                           commit your work and push it to GitHub
 """
 import argparse, html, json, os, re, shutil, subprocess, uuid, sys, tempfile, threading, time, webbrowser
@@ -554,6 +555,93 @@ def cmd_site(a):
     print(f"Built {out}")
 
 
+CLOUD_STMT_MAX = 90_000  # D1 allows 100,000 bytes a statement
+
+
+def sql_str(s):
+    if "\x00" in s:
+        raise ValueError("a NUL character cannot go into a SQL string")
+    return "'" + s.replace("'", "''") + "'"
+
+
+def sql_json(v):
+    return sql_str(json.dumps(v, ensure_ascii=False))
+
+
+def cloud_texts():
+    """Statements that reload the source texts: books' metadata, chapters, segments, reference paragraphs."""
+    out = ["DELETE FROM ref_paras", "DELETE FROM refs", "DELETE FROM segs", "DELETE FROM chapters", "DELETE FROM books"]
+
+    def ins(table, *vals):
+        out.append(f"INSERT INTO {table} VALUES ({', '.join(str(v) if isinstance(v, int) else sql_str(v) for v in vals)})")
+
+    for pos, slug in enumerate(all_slugs()):
+        b = load_book(slug)
+        out.append(f"INSERT INTO books VALUES ({sql_str(slug)}, {pos}, {sql_json(b['meta'])})")
+        for ri, r in enumerate(b["refs"]):
+            ins("refs", slug, ri, r["label"])
+            for rn, rch in enumerate(r["chapters"], 1):
+                for pi, para in enumerate(rch["paras"]):
+                    ins("ref_paras", slug, ri, rn, pi, para)
+        for ch in b["chapters"]:
+            ins("chapters", slug, ch["n"], ch["title"], ch["part"])
+            for pi, s in enumerate(ch["segs"]):
+                ins("segs", slug, ch["n"], pi, s["id"], s["para"], s["text"], int(bool(s["heading"])))
+    return out
+
+
+def cloud_work():
+    """Statements that seed the owner's work: translations, memos, titles, glossary, reading position, last book."""
+    out = ["DELETE FROM memos", "DELETE FROM vi", "DELETE FROM book_work", "DELETE FROM app"]
+    for slug in all_slugs():
+        b = load_book(slug)
+        q = sql_str(slug)
+        out.append(f"INSERT INTO book_work VALUES ({q}, {sql_json(read_json(b['dir'] / 'state.json', {}))}, "
+                   f"{sql_json(load_titles(b))}, {sql_json(read_json(b['dir'] / 'glossary.json', []))})")
+        for ch in b["chapters"]:
+            n = ch["n"]
+            for sid, entry in load_vi(b, n).items():
+                out.append(f"INSERT INTO vi VALUES ({q}, {n}, {sql_str(sid)}, {sql_json(entry)})")
+            for mi, m in enumerate(load_memos(b, n)):
+                out.append(f"INSERT INTO memos VALUES ({q}, {n}, {sql_str(m['id'])}, {mi}, {sql_str(m['seg'])}, "
+                           f"{int(m['offset'])}, {sql_str(m['created'])}, {sql_json(m)})")
+    last = read_json(ROOT / "last.json", {}).get("book")
+    if last:
+        out.append(f"INSERT INTO app VALUES ('last', {sql_str(last)})")
+    return out
+
+
+def cloud_write(out, name, stmts):
+    for st in stmts:
+        size = len(st.encode("utf-8"))
+        if size > CLOUD_STMT_MAX:
+            sys.exit(f"A statement is {size} bytes, over D1's statement limit: {st[:80]}...")
+    (out / f"{name}.sql").write_text(";\n".join(stmts) + ";\n", encoding="utf-8")
+    # cf has no file import for D1: the same statements as JSON batches for `cf d1 raw --batch @file`.
+    chunk, size, n = [], 0, 0
+    for st in stmts + [None]:
+        if st is None or (chunk and (size + len(st) > 1_000_000 or len(chunk) >= 500)):
+            n += 1
+            (out / f"{name}-{n:03d}.json").write_text(json.dumps(chunk, ensure_ascii=False), encoding="utf-8")
+            chunk, size = [], 0
+        if st is not None:
+            chunk.append({"sql": st})
+            size += len(st)
+    return n
+
+
+def cmd_cloud(a):
+    """texts.sql: the source texts, safe to load any time. work.sql: the owner's work, the one-time seed."""
+    out = ROOT / "cloud" / ".build"
+    shutil.rmtree(out, ignore_errors=True)
+    (out / "public").mkdir(parents=True)
+    for name, stmts in (("texts", cloud_texts()), ("work", cloud_work())):
+        files = cloud_write(out, name, stmts)
+        print(f"{name}.sql: {len(stmts)} statements, {files} batch file(s) {name}-NNN.json")
+    shutil.copyfile(ROOT / "app.html", out / "public" / "index.html")
+    print("Wrote cloud/.build/ with public/index.html")
+
+
 def cmd_publish(a):
     def git(*args, check=True):
         return subprocess.run(["git", *args], cwd=ROOT, check=check)
@@ -578,6 +666,7 @@ def main():
     s = sub.add_parser("status"); s.set_defaults(fn=cmd_status)
     s = sub.add_parser("export"); s.add_argument("slug"); s.set_defaults(fn=cmd_export)
     s = sub.add_parser("site"); s.set_defaults(fn=cmd_site)
+    s = sub.add_parser("cloud"); s.set_defaults(fn=cmd_cloud)
     s = sub.add_parser("publish"); s.set_defaults(fn=cmd_publish)
     a = p.parse_args()
     if not a.cmd:

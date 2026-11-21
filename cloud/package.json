@@ -1,0 +1,21 @@
+{
+  "name": "philosophy-translation-cloud",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "cf dev",
+    "build": "cf build",
+    "typecheck": "cf workers types && tsc --noEmit",
+    "test": "node --test test/access.test.ts",
+    "parity": "python3 parity.py"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "2.0.0-rc.2",
+    "cf": "1.0.0-rc.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  },
+  "dependencies": {
+    "jose": "^6.2.18"
+  }
+}

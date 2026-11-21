@@ -22,6 +22,8 @@ A workspace for translating classical philosophy into Vietnamese, and the read-o
 - `python3 tr.py check`: the gate; its exit code is the verdict.
 - `python3 tr.py site`: builds `site/` (ignored), the same command CI runs.
 - The API without side effects: import `tr`, serve `tr.Handler` on `127.0.0.1` port 0 in a thread, send GETs, shut it down. Never `tr.py start` for a test: it makes a git commit.
+- The Worker, in `cloud/`: `pnpm run typecheck`, `pnpm test` (the Access check), and `python3 cloud/parity.py`, which compares every GET and a fixed sequence of writes between `tr.py` (on a scratch copy of `books/`) and the Worker under `cf dev`. Parity rebuilds the local D1 in `cloud/.cloudflare/state` from scratch.
+- `cf dev` in the sandbox: its dev registry under `~/Library/Preferences/cloudflare` is denied, and its file watcher runs out of file handles. A run sets `CLOUDFLARE_DEV_REGISTRY_PATH` and `XDG_CONFIG_HOME` to a scratch folder and `CHOKIDAR_USEPOLLING=1`, as `parity.py` does.
 
 ## Side effects
 
@@ -40,4 +42,4 @@ The repository and every committed file are public, drafts, notes and memos incl
 
 ## Next piece
 
-The workspace online, from any browser, phone included, on Cloudflare Workers, D1 and Access; slice 1 read-only. The plan, its decisions and its order: [plans/cloud-workspace.md](plans/cloud-workspace.md). The Worker's code lives in `cloud/`; never run a `cf` command that reaches the owner's account (sign-in, deploy, a remote database): hand it to the owner.
+The workspace online on Cloudflare Workers, D1 and Access: reads and writes on a computer, read-only on a phone. The plan, its decisions and its order: [plans/cloud-workspace.md](plans/cloud-workspace.md). The Worker's code lives in `cloud/`; never run a `cf` command that reaches the owner's account (sign-in, deploy, a remote database): hand it to the owner.

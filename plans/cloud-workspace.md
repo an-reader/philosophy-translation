@@ -1,6 +1,6 @@
 # The workspace online
 
-Purpose, from the owner: the translation workspace reachable from any browser, phone included. Slice 1 is read-only; translating stays on `tr.py start` until slice 2.
+Purpose, from the owner: the translation workspace reachable from any browser. On a computer it reads and writes; on a phone it is read-only.
 
 ## Decisions
 
@@ -9,33 +9,49 @@ Purpose, from the owner: the translation workspace reachable from any browser, p
 | Cloudflare Workers, Workers Static Assets for `app.html`, D1 for the data, Cloudflare Access for the login | Owner's choice of platform. D1 keeps one row a segment, so autosaves cannot overwrite each other; Access is a login without code; the whole thing runs locally before a deploy |
 | The `cf` CLI, a dev dependency in `cloud/` | Cloudflare's guidance for a new project; its develop and deploy commands are stable |
 | The Worker in TypeScript | The mainstream Workers path; the Python parser stays where it is (next line) |
-| Segments come from `tr.py`'s parser: `python3 tr.py cloud` writes the D1 data and copies `app.html` | Segment ids never depend on a second parser |
-| The Worker answers the same GET API as `tr.py`, with the same JSON | `app.html` runs unchanged, and a parity check compares the two |
-| Slice 1: the repository is the record and D1 is reloaded from it in full | Read-only, so nothing in D1 can be lost |
-| Slice 2: D1 is the record for the owner's work, and a sync writes it back into the same `vi/*.json` files | Git history and the Pages site keep working |
-| Hosted on the Worker's `workers.dev` address, Access turned on for it | No domain needed |
+| Segments come from `tr.py`'s parser. `python3 tr.py cloud` writes `texts.sql` (the books, safe to reload any time), `work.sql` (the owner's work, a one-time seed) and the Worker's page | Segment ids never depend on a second parser, and reloading a book's text never wipes online work |
+| The Worker answers the same API as `tr.py`, reads and writes, with the same JSON | `app.html` runs unchanged, and a parity check compares the two |
+| Every API request carries a valid Access token, or is refused; only local development skips the check | A deployed Worker without its Access settings fails closed |
+| The phone is read-only by a mode in `app.html` at phone width, not by the API | The API cannot tell a phone reliably, and the phone needs a reading layout, not a security boundary |
+| From the cutover, D1 is the record of the owner's work. `python3 tr.py pull` writes it back into the same files, then `python3 tr.py publish` as today | Git history and the Pages site keep working |
+| `tr.py pull` refuses while `books/` has uncommitted changes | A local edit is never overwritten without a word |
+| `tr.py pull` passes through Access with a service token that only the owner holds | The Worker stays closed to everyone else |
+| Timestamps written by the Worker are UTC+7, in `tr.py`'s format | The repository's existing timestamps are local times at that offset |
+| Two Workers on `workers.dev`, a preview and the real one, each with its own D1 database, Access on both | Test edits on the preview never touch the real work |
 
-## Slice 1: read-only, in order
+## In order
 
-1. `python3 tr.py cloud`: writes the D1 schema and a full-reload data file into `cloud/.build/`, and copies `app.html` as the Worker's page. About 5 minutes.
-2. The Worker: the GET API from D1, `app.html` at `/`, every POST answered 405 read-only. About 10 minutes.
-3. Parity, locally: every GET endpoint of every book, `tr.py` against the Worker under `cf dev`, equal JSON. About 5 minutes.
-4. `app.html` in read-only mode: editing switched off when the API says read-only, checked at phone width. About 10 minutes.
-5. The owner deploys: sign in, create the database, load it, deploy a preview, turn on Access. Commands handed one by one.
-6. The phone look on the preview address, then the deploy.
+1. `python3 tr.py cloud`: `texts.sql`, `work.sql` and the page, into `cloud/.build/`. About 5 minutes.
+2. The Worker's reads: the GET API from D1, `app.html` at `/`. About 10 minutes.
+3. The Worker's writes: segments, memos, titles, glossary. About 10 minutes.
+4. The Access token check, failing closed. About 5 minutes.
+5. Parity, locally: every GET and one fixed sequence of writes, `tr.py` on a scratch copy against the Worker under `cf dev`. About 5 minutes.
+6. `python3 tr.py pull`, checked by a round trip: seed a local D1, pull into a scratch copy, compare with `books/`, byte for byte. About 10 minutes.
+7. `app.html`'s phone mode: read-only at phone width, checked at that width. About 10 minutes.
+8. The owner sets up the preview: sign in, create its database, load it, deploy, turn on Access. Commands handed one by one.
+9. The look on the preview, on a computer and on the phone.
+10. The cutover: publish the local work, set up the real Worker the same way with the seed loaded once, then translate online. PROCESS.md changes to say so.
 
-## The four stages of slice 1
+Steps 1 to 5: built and reviewed, about 15 minutes of agent time (the size for the next run of this kind). The review found these, to fix before step 8:
 
-- **MVP end to end:** steps 1 and 2, `app.html` served by `cf dev` from a local D1.
-- **Verified locally:** `tr.py check`, the TypeScript check and the parity check, each by its exit code.
-- **The look:** on the owner's phone, at the preview address, one yes or no each:
-  1. After the Access login, does the library open with all three books?
-  2. Does a chapter open with its source, its reference and your Vietnamese, in a layout you can read on the phone?
-  3. Do your memos, notes and glossary show?
-  4. Is it clear that nothing can be edited there?
-  Gap: no screenshot walk (the project has no browser tests); the owner's phone is the walk.
-- **Pre-production:** the uploaded version's preview address, checked before the deploy. Gap: the preview shares the one D1 database, which is safe only while slice 1 writes nothing; slice 2 gets a database of its own for previews.
+- The preview must have its own database. `cf previews deploy` uploads a version of the same Worker with the same database, so test edits would land in the real work. The config gives a second Worker, with its own database, for the preview.
+- A deploy with `DATABASE_ID` empty would quietly create a new, empty database. The config refuses to build for a deploy while an id is empty.
+- The remote load is 41 separate `cf d1 raw` commands. One script runs them for the owner: texts any time, the work seed only after the owner confirms it.
+- Small: a memo delete with a non-text id crashes with a 500 instead of a 400; the load files are cut at a million characters, not bytes; and parity wipes any local database the owner was testing with.
 
-## Slice 2, to plan after slice 1
+## The four stages
 
-Writes from the Worker, the Worker checking Access's token on every write, a preview database, the sync back into the repository, and what happens to an edit made locally and online on the same day.
+- **MVP end to end:** steps 1 to 3, `app.html` under `cf dev`, reading and writing a local D1.
+- **Verified locally:** `tr.py check`, the TypeScript check, the parity check and the pull round trip, each by its exit code.
+- **The look**, one yes or no each:
+  1. On a computer, at the preview address: after the Access login, does the library open with all three books?
+  2. Type in a segment and reload the page: are your text and its status still there?
+  3. On the phone: does a chapter read well, with source, reference and your Vietnamese, and no way to edit?
+  4. After the cutover, your first `tr.py pull` and `tr.py publish`: does the public site show what you typed online?
+
+  Gap: no screenshot walk (the project has no browser tests); the owner's computer and phone are the walk.
+- **Pre-production:** the preview Worker and its own database.
+
+## Later
+
+- `pull` and `publish` on a schedule, instead of by hand.

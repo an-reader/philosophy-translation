@@ -5,3 +5,6 @@ dist/
 site/
 archive/
 .local/
+cloud/node_modules/
+cloud/.build/
+cloud/.cloudflare/
