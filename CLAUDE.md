@@ -47,6 +47,6 @@ A workspace for translating classical philosophy into Vietnamese, and the read-o
 
 The repository and every committed file are public, drafts, notes and memos included; its commits are signed as `Reader`. A committed file names no person and holds no absolute path or other detail of the owner's machine. `archive/` and `.local/` are private and ignored.
 
-## Next piece
+## The online workspace
 
-The workspace online on Cloudflare Workers and D1, behind an access key the Worker checks itself (no Cloudflare Access: see the plan): reads and writes on a computer, read-only on a phone. The plan, its decisions and its order: [plans/cloud-workspace.md](plans/cloud-workspace.md). The Worker's code lives in `cloud/`; never run a `cf` command that reaches the owner's account (sign-in, deploy, a remote database): hand it to the owner.
+Live since 2026-11-22: the online database is the record of the owner's work (`cloud/ONLINE`). The workspace online on Cloudflare Workers and D1, behind an access key the Worker checks itself (no Cloudflare Access: see the plan): reads and writes on a computer, read-only on a phone. The plan, its decisions and its order: [plans/cloud-workspace.md](plans/cloud-workspace.md). The Worker's code lives in `cloud/`; never run a `cf` command that reaches the owner's account (sign-in, deploy, a remote database): hand it to the owner.

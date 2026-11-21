@@ -48,7 +48,9 @@ Steps 8 and 9: done. The preview runs with its own database and key, and the own
 
 Before the cutover: once online, `tr.py start` turns read-only, keyed on the committed marker `cloud/ONLINE`, so a local edit cannot be overwritten by the next `pull`. PROCESS.md and README describe the online routine. Built and reviewed, about 2 minutes of agent time; `cloud/ONLINE` is created at the cutover.
 
-Next: step 10, the cutover.
+Step 10: done on 2026-11-22. The real Worker runs with its own database and key, seeded once from the repository. The owner signed in on a computer and a phone, and `tr.py pull` answered "Nothing changed". `cloud/ONLINE` is committed.
+
+Open: the look's question 4, after the first real session online. Also open: whether the owner ever needs to translate offline (the default: no, and the local copy stays read-only).
 
 ## The four stages
 
